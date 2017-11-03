@@ -1,6 +1,6 @@
 # Readme
 # Assimp -> Ogre adaptor
-###### For Ogre  2.1 check --> [Ogre>Assimp](https://github.com/riveranb/ogre-assimp/) by riveranb
+##### Included ogre2.1 branch--> [Ogre>Assimp](https://github.com/riveranb/ogre-assimp/) by riveranb just checkout ogre2.1 or clone directory from his branch.
 
 This code was originally from OgreAssimp Converter tool which can be found at [OgreAssimp converter](https://bitbucket.org/ogreaddons/ogreassimp/)
 
