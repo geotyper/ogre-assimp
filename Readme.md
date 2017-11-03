@@ -46,3 +46,4 @@ Any and all improvements made on this code are welcome.
 
 ### Liscence:
 This code use OgreAssimp Converter liscence.
+See also LISCENCE file

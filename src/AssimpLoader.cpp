@@ -174,12 +174,12 @@ bool AssimpLoader::convert(const AssOptions options, Ogre::MeshPtr &meshPtrs, Og
     }
     Assimp::DefaultLogger::kill();
 
-    if(!mSkeleton.isNull())
+    if(mSkeleton)
     {
 
         if(!mQuietMode)
         {
-            Ogre::LogManager::getSingleton().logMessage("Root bone: " + mSkeleton->getRootBone()->getName());
+            Ogre::LogManager::getSingleton().logMessage("Root bone: " + mSkeleton->getRootBones()[0]->getName());
         }
 
         unsigned short numBones = mSkeleton->getNumBones();
@@ -566,7 +566,7 @@ void AssimpLoader::parseAnimation (const aiScene* mScene, int index, aiAnimation
 
         Ogre::String boneName = Ogre::String(node_anim->mNodeName.data);
 
-        if(mSkeleton->hasBone(boneName))
+        if(mSkeleton->getRootBones()[0]->getName() == boneName)
         {
             Ogre::Bone* bone = mSkeleton->getBone(boneName);
             Ogre::Matrix4 defBonePoseInv;
@@ -904,7 +904,7 @@ Ogre::MaterialPtr AssimpLoader::createMaterialByScript(int index, const aiMateri
 
     Ogre::MaterialManager* matMgr = Ogre::MaterialManager::getSingletonPtr();
     Ogre::String materialName = mBasename + "#" + Ogre::StringConverter::toString(index);
-    if(matMgr->resourceExists(materialName))
+    if(matMgr->resourceExists(materialName, Ogre::ResourceGroupManager::AUTODETECT_RESOURCE_GROUP_NAME))
     {
 #if (OGRE_VERSION < ((1 << 16) | (9 << 8) | 0))
         Ogre::MaterialPtr matPtr = matMgr->getByName(materialName);
@@ -1157,7 +1157,7 @@ Ogre::MaterialPtr AssimpLoader::createMaterial(int index, const aiMaterial* mat,
             {
                 // fall back to our very simple and very hardcoded hot-pink version
                 Ogre::DataStreamPtr altStrm(OGRE_NEW Ogre::MemoryDataStream(s_RGB, sizeof(s_RGB)));
-                image.loadRawData(altStrm, 2, 2, Ogre::PF_R8G8B8);
+                image.loadRawData(altStrm, 2, 2, 1, Ogre::PF_R8G8B8);
                 if(!mQuietMode)
                 {
                     Ogre::LogManager::getSingleton().logMessage("Could not load texture, falling back to hotpink");
@@ -1173,7 +1173,7 @@ Ogre::MaterialPtr AssimpLoader::createMaterial(int index, const aiMaterial* mat,
         } else {
             // fall back to our very simple and very hardcoded hot-pink version
             Ogre::DataStreamPtr altStrm(OGRE_NEW Ogre::MemoryDataStream(s_RGB, sizeof(s_RGB)));
-            image.loadRawData(altStrm, 2, 2, Ogre::PF_R8G8B8);
+            image.loadRawData(altStrm, 2, 2, 1, Ogre::PF_R8G8B8);
             if(!mQuietMode)
             {
                 Ogre::LogManager::getSingleton().logMessage("Could not load texture, falling back to hotpink - 2");
@@ -1420,7 +1420,7 @@ bool AssimpLoader::createSubMesh(const Ogre::String& name, int index, const aiNo
     } // if mesh has bones
 
     // Finally we set a material to the submesh
-    if (!matptr.isNull())
+    if (matptr)
         submesh->setMaterialName(matptr->getName());
 
     return true;
