@@ -33,36 +33,38 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
 THE SOFTWARE.
 -----------------------------------------------------------------------------
 */
-
 #include "AssimpLoader.h"
-
-#include "Ogre.h"
-// v1
-#include "OgreMeshManager.h"
-#include "OgreSubMesh.h"
-#include "OgreOldBone.h"
-#include "OgreSkeleton.h"
-#include "OgreAnimation.h"
-#include "OgreMesh2.h"
-#include "OgreSubMesh2.h"
-
 #include "assimp/Importer.hpp"
+//#include "assimp/DefaultLogger.h"
 #include "assimp/DefaultLogger.hpp"
-#include "assimp/postprocess.h"
-#include "assimp/scene.h"
-
-#include <tuple>
-
-//#include <boost/tuple/tuple.hpp>
-//#include <boost/algorithm/string.hpp>
-
-namespace Demo
-{
-namespace assimp
-{
-
-static Ogre::v1::MeshPtr _sV1mesh;
-static Ogre::MeshPtr _sV2mesh;
+#include "OgreDataStream.h"
+#include "OgreImage.h"
+#include "OgreTexture.h"
+#include "OgreTextureManager.h"
+#include "OgreMaterial.h"
+#include "OgreMaterialManager.h"
+#include "OgreLog.h"
+#include "OgreLogManager.h"
+#include "OgreHardwareBuffer.h"
+#include "OgreMesh.h"
+#include "OgreSubMesh.h"
+#include "OgreDefaultHardwareBufferManager.h"
+#include "OgreMeshManager.h"
+#include "OgreSceneManager.h"
+#include <OgreStringConverter.h>
+#include <OgreSkeletonManager.h>
+#include "OgreMeshSerializer.h"
+#include "OgreSkeletonSerializer.h"
+#include "OgreAnimation.h"
+#include "OgreAnimationTrack.h"
+#include "OgreKeyFrame.h"
+#include "OgreLodConfig.h"
+#include "OgreLodStrategyManager.h"
+#include "OgreDistanceLodStrategy.h"
+#include "Ogre.h"
+#include <boost/tuple/tuple.hpp>
+//#include "OgreXMLSkeletonSerializer.h"
+#include <boost/algorithm/string.hpp>
 
 Ogre::String toString(const aiColor4D& colour)
 {
@@ -72,339 +74,267 @@ Ogre::String toString(const aiColor4D& colour)
         Ogre::StringConverter::toString(Ogre::Real(colour.a));
 }
 
-int AssimpLoader::_msBoneCount = 0;
+int AssimpLoader::msBoneCount = 0;
 
 AssimpLoader::AssimpLoader()
 {
+    //mSkeletonRootNode = NULL;
 }
 
 AssimpLoader::~AssimpLoader()
 {
 }
 
-const aiScene* AssimpLoader::readingAsset(const AssetOptions & opts, int quality)
+bool AssimpLoader::convert(const AssOptions options, Ogre::MeshPtr &meshPtrs, Ogre::SkeletonPtr &mSkeleton, Ogre::MaterialPtr &materialPtr, std::string &my_mesh_name, int quality)
 {
-	mAnimationSpeedModifier = opts.animationSpeedModifier;
-	mLoaderParams = opts.params;
-	mQuietMode = ((mLoaderParams & LP_QUIET_MODE) == 0) ? false : true;
-	mCustomAnimationName = opts.customAnimationName;
-	if ((mLoaderParams & LP_USE_LAST_RUN_NODE_DERIVED_TRANSFORMS) == false)
-	{
-		mDerivedTransformsByName.clear();
-	}
+	this->meshPtr = meshPtrs;
 
-	Ogre::String extension;
-	Ogre::StringUtil::splitFullFilename(opts.source, mBasename, extension, mPath);
-	mBasename = mBasename + "_" + extension;
+    mAnimationSpeedModifier = options.animationSpeedModifier;
+    mLoaderParams = options.params;
+    mQuietMode = ((mLoaderParams & LP_QUIET_MODE) == 0) ? false : true;
+    mCustomAnimationName = options.customAnimationName;
+    if ((mLoaderParams & LP_USE_LAST_RUN_NODE_DERIVED_TRANSFORMS) == false)
+    {
+        mNodeDerivedTransformByName.clear();
+    }
 
-	if (!opts.dest.empty())
-	{
-		mPath = opts.dest + "/";
-	}
+    Ogre::String extension;
+    Ogre::StringUtil::splitFullFilename(options.source, mBasename, extension, mPath);
+    mBasename = mBasename + "_" + extension;
+	boost::filesystem::path p(options.source);
 
-	Assimp::DefaultLogger::create("assimplogger.log", Assimp::Logger::VERBOSE);
-	Assimp::DefaultLogger::get()->info("Loading asset ...");
-	if (!mQuietMode)
-	{
-		Ogre::LogManager::getSingleton().logMessage("*** Loading asset file... ***");
-		Ogre::LogManager::getSingleton().logMessage("Filename: " + opts.source);
-	}
+    if(!options.dest.empty())
+    {
+        mPath = options.dest + "/";
+    }
 
-	const aiScene *scene;
-	if (quality == 0)
-	{
-		scene = mImportHandler.ReadFile(opts.source.c_str(),
-			aiProcess_TransformUVCoords |
-			aiProcess_FlipUVs |
-			aiProcess_OptimizeMeshes |
-			aiProcess_JoinIdenticalVertices);
-	}
+    Assimp::DefaultLogger::create("asslogger.log",Assimp::Logger::VERBOSE);
+    Assimp::DefaultLogger::get()->info("Logging asses");
+
+    if(!mQuietMode)
+    {
+        Ogre::LogManager::getSingleton().logMessage("*** Loading ass file... ***");
+        Ogre::LogManager::getSingleton().logMessage("Filename " + options.source);
+    }
+    Ogre::ResourceGroupManager::getSingleton().addResourceLocation(mPath, "FileSystem");
+    Ogre::ResourceGroupManager::getSingleton().addResourceLocation("./resources", "FileSystem");
+	std::string file_path = p.parent_path().string();
+	//boost::replace_all(file_path, "\\", "/");
+	Ogre::ResourceGroupManager::getSingleton().addResourceLocation(file_path, "FileSystem");
+
+    Ogre::ResourceGroupManager::getSingleton().initialiseAllResourceGroups();
+
+    const aiScene *scene;
+
+    Assimp::Importer importer;
+   	if(quality==0)
+		scene = importer.ReadFile(options.source.c_str(),  aiProcess_TransformUVCoords | aiProcess_FlipUVs| aiProcess_OptimizeMeshes| aiProcess_JoinIdenticalVertices);
 	else
-	{
-		scene = mImportHandler.ReadFile(opts.source.c_str(),
-			aiProcessPreset_TargetRealtime_Quality |
-			aiProcess_TransformUVCoords |
-			aiProcess_FlipUVs);
-	}
+		scene = importer.ReadFile(options.source.c_str(), aiProcessPreset_TargetRealtime_Quality | aiProcess_TransformUVCoords | aiProcess_FlipUVs);
 
-	// If the import failed, report it
-	if (!scene)
-	{
-		if (!mQuietMode)
-		{
-			Ogre::LogManager::getSingleton().logMessage("AssImp importer failed with the following message:");
-			Ogre::LogManager::getSingleton().logMessage(mImportHandler.GetErrorString());
-		}
-	}
+    // If the import failed, report it
+    if( !scene)
+    {
+        if(!mQuietMode)
+        {
+            Ogre::LogManager::getSingleton().logMessage("AssImp importer failed with the following message:");
+            Ogre::LogManager::getSingleton().logMessage(importer.GetErrorString() );
+        }
+        return false;
+    }
 
-	return scene;
-}
+    grabNodeNamesFromNode(scene, scene->mRootNode);
+    grabBoneNamesFromNode(scene, scene->mRootNode);
 
-bool AssimpLoader::convertV2(const AssetOptions& options, Ogre::MeshPtr &pmesh, int quality)
-{
-	const aiScene* inscene = readingAsset(options, quality);
-	if (!inscene)
-	{
-		return false;
-	}
+    computeNodesDerivedTransform(scene, scene->mRootNode, scene->mRootNode->mTransformation);
 
-	grabNodeNamesFromNode(inscene, inscene->mRootNode);
-	grabBoneNamesFromNode(inscene, inscene->mRootNode);
-	computeNodesDerivedTransform(inscene, inscene->mRootNode, inscene->mRootNode->mTransformation);
+    if(mBonesByName.size())
+    {
 
-	// TODO: consider corresponding bone/skeleton and animation data
 
-	_sV2mesh = pmesh;
-	genMeshDataFromNodeV2(inscene, inscene->mRootNode);
+        msBoneCount = 0;
+        createBonesFromNode(scene, scene->mRootNode);
+        msBoneCount = 0;
+        createBoneHiearchy(scene, scene->mRootNode);
 
-	if (!mQuietMode)
-	{
-		Ogre::LogManager::getSingleton().logMessage("*** Finished loading asset file ***");
-	}
-	Assimp::DefaultLogger::kill();
+        if(scene->HasAnimations())
+        {
+            for(unsigned int i = 0; i < scene->mNumAnimations; ++i)
+            {
+                parseAnimation(scene, i, scene->mAnimations[i]);
+            }
+        }
+    }
 
-	// clean up
-	mMaterialCode = "";
-	mCustomAnimationName = "";
-	mBonesByName.clear();
-	mNodesByName.clear();
-	mBonenodes.clear();
-	mImportHandler.FreeScene();
-	_sV2mesh.reset(); // release unnecessary pointer, or will crash at shutdown
+    loadDataFromNode(scene, scene->mRootNode, mPath);
 
-	return true;
-}
+    if(!mQuietMode)
+    {
+        Ogre::LogManager::getSingleton().logMessage("*** Finished loading ass file ***");
+    }
+    Assimp::DefaultLogger::kill();
 
-void AssimpLoader::genMeshDataFromNodeV2(const aiScene* scene, const aiNode *node)
-{
-	if (_sV2mesh.isNull())
-	{
-		// TODO: or create one here?
-		return;
-	}
+    if(!mSkeleton.isNull())
+    {
 
-	if (node->mNumMeshes > 0)
-	{
-		/*
-		if (mLoaderParams & LP_GENERATE_SINGLE_MESH)
-		{
-		}
-		*/
+        if(!mQuietMode)
+        {
+            Ogre::LogManager::getSingleton().logMessage("Root bone: " + mSkeleton->getRootBone()->getName());
+        }
 
-		for (unsigned int idx = 0; idx<node->mNumMeshes; ++idx)
-		{
-			aiMesh *pAIMesh = scene->mMeshes[node->mMeshes[idx]];
-			if (!mQuietMode)
-			{
-				Ogre::LogManager::getSingleton().logMessage(
-					"SubMesh " + Ogre::StringConverter::toString(idx) + " for mesh '" + Ogre::String(node->mName.data) + "'");
-			}
+        unsigned short numBones = mSkeleton->getNumBones();
+        unsigned short i;
+        for (i = 0; i < numBones; ++i)
+        {
+            Ogre::Bone* pBone =mSkeleton->getBone(i);
+            assert(pBone);
+        }
 
-			// Create a material instance for the mesh.
-			const aiMaterial *pAIMaterial = scene->mMaterials[pAIMesh->mMaterialIndex];
-			genSubMeshV2(node->mName.data, idx, node, pAIMesh, pAIMaterial, _sV2mesh);
-		}
-	}
 
-	// Traverse all child nodes of the current node instance
-	for (unsigned int childIdx = 0; childIdx<node->mNumChildren; childIdx++)
-	{
-		const aiNode *pChildNode = node->mChildren[childIdx];
-		genMeshDataFromNodeV2(scene, pChildNode);
-	}
-}
+    }
 
-bool AssimpLoader::genSubMeshV2(const Ogre::String& name, int index, const aiNode* node, const aiMesh* mesh, 
-	const aiMaterial* mat, Ogre::MeshPtr pmeshv2)
-{
-	// if animated all submeshes must have bone weights
-	if (mBonesByName.size() && !mesh->HasBones())
-	{
-		if (!mQuietMode)
-		{
-			Ogre::LogManager::getSingleton().logMessage("Skipping Mesh " + Ogre::String(mesh->mName.data) + "with no bone weights");
-		}
-		return false;
-	}
+    Ogre::MeshSerializer meshSer;
+    for(MeshVector::iterator it = mMeshes.begin(); it != mMeshes.end(); ++it)
+    {
+        meshPtr= *it;
+        if(mBonesByName.size())
+        {
+			meshPtr->setSkeletonName(mBasename + ".skeleton");
+        }
 
-	// TODO: Material for v1::Mesh conversion still have problems now.
-	/*
-	Ogre::MaterialPtr matptr;
-	if((mLoaderParams & LP_GENERATE_MATERIALS_AS_CODE) == 0)
-	{
-	matptr = createMaterial(mesh->mMaterialIndex, mat, dir);
-	}
-	else
-	{
-	matptr = createMaterialByScript(mesh->mMaterialIndex, mat);
-	}
-	*/
-
-	Ogre::VaoManager *vaoManager = Ogre::Root::getSingleton().getRenderSystem()->getVaoManager();
-	// create vertex buffer
-	unsigned short numreal = 3;
-	posBytes = sizeof(Ogre::Real) * 3;
-	Ogre::VertexElement2Vec velements;
-	velements.push_back(Ogre::VertexElement2(Ogre::VET_FLOAT3, Ogre::VES_POSITION));
-	if (mesh->HasNormals())
-	{
-		normBytes = sizeof(Ogre::Real) * 3
-		numreal += 3;
-		velements.push_back(Ogre::VertexElement2(Ogre::VET_FLOAT3, Ogre::VES_NORMAL));
-	}
-	if (mesh->HasTextureCoords(0)) // currently consider first uv only
-	{
-		numreal += 2;
-		velements.push_back(Ogre::VertexElement2(Ogre::VET_FLOAT2, Ogre::VES_TEXTURE_COORDINATES));
-	}
-	if (mesh->HasVertexColors(0)) // assume first color set as diffuse color
-	{
-		// TODO: can it be uint32 (RGBA)?
-		numreal += 3;
-		velements.push_back(Ogre::VertexElement2(Ogre::VET_FLOAT3, Ogre::VES_DIFFUSE));
-	}
-
-	Ogre::Real *vertexdata = reinterpret_cast<Ogre::Real *> (OGRE_MALLOC_SIMD(
-								sizeof(Ogre::Real) * numreal * mesh->mNumVertices, Ogre::MEMCATEGORY_GEOMETRY));
-	Ogre::FreeOnDestructor vdataPtr(vertexdata);
-	// fill vertexdata manually
-	// prime pointers to vertex related data
-	aiVector3D *vec = mesh->mVertices;
-	aiVector3D *norm = mesh->mNormals;
-	aiVector3D *uv = mesh->mTextureCoords[0];
-	aiColor4D *col = mesh->mColors[0];
-	Ogre::Aabb subAABB(Ogre::Vector3(vec[0].x, vec[0].y, vec[0].z), Ogre::Vector3::ZERO);
-#if defined _DEBUG && 0
-	Ogre::LogManager::getSingleton().logMessage("  = Parsed vertuces (positions):");
+        Ogre::Mesh::SubMeshIterator smIt = meshPtr->getSubMeshIterator();
+        while (smIt.hasMoreElements())
+        {
+            Ogre::SubMesh* sm = smIt.getNext();
+            if (!sm->useSharedVertices)
+            {
+#if (OGRE_VERSION >  ((1 << 16) | (7 << 8) | 0))
+                Ogre::VertexDeclaration* newDcl =
+                    sm->vertexData->vertexDeclaration->getAutoOrganisedDeclaration(meshPtr->hasSkeleton(), meshPtr->hasVertexAnimation(), false);
+#else
+                Ogre::VertexDeclaration* newDcl =
+                    sm->vertexData->vertexDeclaration->getAutoOrganisedDeclaration(mMesh->hasSkeleton(), mMesh->hasVertexAnimation());
 #endif
-	for (unsigned int i = 0, offset = 0; i < mesh->mNumVertices; ++i)
-	{
-		// position
-		vertexdata[offset + 0] = vec[i].x;
-		vertexdata[offset + 1] = vec[i].y;
-		vertexdata[offset + 2] = vec[i].z;
-		offset += 3;
-		subAABB.merge(Ogre::Vector3(vec[i].x, vec[i].y, vec[i].z));
-#if defined _DEBUG && 0
-		Ogre::LogManager::getSingleton().logMessage(Ogre::StringConverter::toString(i) + ": " +
-											Ogre::StringConverter::toString(vec[i].x) + ",  " +
-											Ogre::StringConverter::toString(vec[i].y) + ",  " +
-											Ogre::StringConverter::toString(vec[i].z));
+                if (*newDcl != *(sm->vertexData->vertexDeclaration))
+                {
+                    // Usages don't matter here since we're only exporting
+                    Ogre::BufferUsageList bufferUsages;
+                    for (size_t u = 0; u <= newDcl->getMaxSource(); ++u)
+                        bufferUsages.push_back(Ogre::HardwareBuffer::HBU_STATIC_WRITE_ONLY);
+                    sm->vertexData->reorganiseBuffers(newDcl, bufferUsages);
+                }
+            }
+        }
+
+        if (options.numLods > 0)
+        {
+            unsigned short numLod;
+            Ogre::LodConfig lodConfig;
+            lodConfig.levels.clear();
+			lodConfig.mesh = meshPtr;// ->clone(meshPtr->getName());
+#if (OGRE_VERSION < ((1 << 16) | (9 << 8) | 0))
+            lodConfig.strategy = Ogre::DistanceLodStrategy::getSingletonPtr();
+#else
+            lodConfig.strategy = Ogre::DistanceLodBoxStrategy::getSingletonPtr();
 #endif
 
-		// normal
-		if (mesh->HasNormals())
-		{
-			vertexdata[offset + 0] = norm[i].x;
-			vertexdata[offset + 1] = norm[i].y;
-			vertexdata[offset + 2] = norm[i].z;
-			offset += 3;
-		}
-		// uv
-		if (mesh->HasTextureCoords(0))
-		{
-			vertexdata[offset + 0] = uv[i].x;
-			vertexdata[offset + 1] = uv[i].y;
-			offset += 2;
-		}
-		// color
-		if (mesh->HasVertexColors(0))
-		{
-			vertexdata[offset + 0] = col[i].r;
-			vertexdata[offset + 1] = col[i].g;
-			vertexdata[offset + 2] = col[i].b;
-			offset += 3;
-		}
-	}
+            Ogre::LodLevel lodLevel;
+            lodLevel.reductionMethod = Ogre::LodLevel::VRM_PROPORTIONAL;
 
-	Ogre::VertexBufferPacked *vertexBuffer = 0;
-	try
-	{
-		//Create the actual vertex buffer.
-		vertexBuffer = vaoManager->createVertexBuffer(velements, mesh->mNumVertices,
-			Ogre::BT_IMMUTABLE,
-			vertexdata, false);
-	}
-	catch (Ogre::Exception &e)
-	{
-		// When keepAsShadow = true, the memory will be freed when the index buffer is destroyed.
-		// However if for some weird reason there is an exception raised, the memory will
-		// not be freed, so it is up to us to do so.
-		// The reasons for exceptions are very rare. But we're doing this for correctness.
-		OGRE_FREE_SIMD(vertexBuffer, Ogre::MEMCATEGORY_GEOMETRY);
-		vertexBuffer = 0;
-		throw e;
-	}
-	//We'll just use one vertex buffer source (multi-source not working yet)
-	Ogre::VertexBufferPackedVec vertexBuffers;
-	vertexBuffers.push_back(vertexBuffer);
+            numLod = options.numLods;
+            if (options.usePercent)
+            {
+                lodLevel.reductionMethod = Ogre::LodLevel::VRM_PROPORTIONAL;
+                lodLevel.reductionValue = options.lodPercent * 0.01f;
+            }
+            else
+            {
+                lodLevel.reductionMethod = Ogre::LodLevel::VRM_CONSTANT;
+                lodLevel.reductionValue = (Ogre::Real)options.lodFixed;
+            }
+            Ogre::Real currDist = 0;
+            for (unsigned short iLod = 0; iLod < numLod; ++iLod)
+            {
+                currDist += options.lodValue;
+                Ogre::Real currDistSq = Ogre::Math::Sqr(currDist);
+                lodLevel.distance = currDistSq;
+                lodConfig.levels.push_back(lodLevel);
+            }
 
-	// currently consider 16-bit indices array only
-	Ogre::uint16 * indexdata = reinterpret_cast<Ogre::uint16 *>(OGRE_MALLOC_SIMD(
-									sizeof(Ogre::uint16) * 3 * mesh->mNumFaces, Ogre::MEMCATEGORY_GEOMETRY));
-	Ogre::FreeOnDestructor iddataPtr(indexdata);
-	// fill indexdata manually
-#if defined _DEBUG && 0
-	Ogre::LogManager::getSingleton().logMessage("  = Parsed indices:");
+			meshPtr->setLodStrategy(Ogre::LodStrategyManager::getSingleton().getStrategy(options.lodStrategy));
+            //Ogre::ProgressiveMeshGenerator pm;
+            //pm.generateLodLevels(lodConfig);
+        }
+
+		
+    }
+
+
+    // serialise the materials
+    if((mLoaderParams & LP_GENERATE_MATERIALS_AS_CODE) == 0)
+    {
+        Ogre::MaterialSerializer ms;
+        std::vector<Ogre::String> exportedNames;
+
+        for(MeshVector::iterator it = mMeshes.begin(); it != mMeshes.end(); ++it)
+        {
+            Ogre::MeshPtr mMesh = *it;
+
+            // queue up the materials for serialise
+            Ogre::MaterialManager *mmptr = Ogre::MaterialManager::getSingletonPtr();
+            Ogre::Mesh::SubMeshIterator smIt = mMesh->getSubMeshIterator();
+            while(smIt.hasMoreElements())
+            {
+                Ogre::SubMesh* sm = smIt.getNext();
+                Ogre::String matName(sm->getMaterialName());
+                if (std::find(exportedNames.begin(), exportedNames.end(), matName) == exportedNames.end())
+                {
+#if (OGRE_VERSION < ((1 << 16) | (9 << 8) | 0))
+                     materialPtr = mmptr->getByName(matName);
+#else
+                     materialPtr = mmptr->getByName(matName).staticCast<Ogre::Material>();
 #endif
-	for (unsigned int i = 0, offset = 0; i < mesh->mNumFaces; ++i)
-	{
-		indexdata[offset + 0] = (Ogre::uint16)mesh->mFaces[i].mIndices[0];
-		indexdata[offset + 1] = (Ogre::uint16)mesh->mFaces[i].mIndices[1];
-		indexdata[offset + 2] = (Ogre::uint16)mesh->mFaces[i].mIndices[2];
-#if defined _DEBUG && 0
-		Ogre::LogManager::getSingleton().logMessage(Ogre::StringConverter::toString(i) + ": " +
-											Ogre::StringConverter::toString(mesh->mFaces[i].mIndices[0]) + ", " +
-											Ogre::StringConverter::toString(mesh->mFaces[i].mIndices[1]) + ", " +
-											Ogre::StringConverter::toString(mesh->mFaces[i].mIndices[2]));
-#endif
+                    ms.queueForExport(materialPtr);
+                    exportedNames.push_back(matName);
+                }
+            }
+        }
 
-		offset += 3;
-	}
+    //   if(exportedNames.size()&&!my_object.meshPtr)
+          //  ms.exportQueued(mPath + mBasename + ".material", true);
+    }
+    else
+    {
+		//if(!my_object.meshPtr)
+		{
+			;//	std::ofstream stream;
+		//	stream.open( (mPath + mBasename + ".material").c_str(), std::ios::out | std::ios::binary);
+			////stream << "import * from base.material\n\n";
+		//	stream << mMaterialCode;
+		//	stream.close();
+		}
+    }
 
-	Ogre::IndexBufferPacked *indexBuffer = 0;
-	try
-	{
-		indexBuffer = vaoManager->createIndexBuffer(Ogre::IndexBufferPacked::IT_16BIT,
-			3 * mesh->mNumFaces, // number of indices
-			Ogre::BT_IMMUTABLE,
-			indexdata, false);
-	}
-	catch (Ogre::Exception &e)
-	{
-		// When keepAsShadow = true, the memory will be freed when the index buffer is destroyed.
-		// However if for some weird reason there is an exception raised, the memory will
-		// not be freed, so it is up to us to do so.
-		// The reasons for exceptions are very rare. But we're doing this for correctness.
-		OGRE_FREE_SIMD(indexBuffer, Ogre::MEMCATEGORY_GEOMETRY);
-		indexBuffer = 0;
-		throw e;
-	}
-	
-	Ogre::SubMesh * submesh = pmeshv2->createSubMesh(index);
-	Ogre::VertexArrayObject *vao = vaoManager->createVertexArrayObject(
-		vertexBuffers, indexBuffer, Ogre::OT_TRIANGLE_LIST);
 
-	//Each Vao pushed to the vector refers to an LOD level.
-	//Must be in sync with mesh->mLodValues & mesh->mNumLods if you use more than one level
-	submesh->mVao[Ogre::VpNormal].push_back(vao);
-	//Use the same geometry for shadow casting.
-	submesh->mVao[Ogre::VpShadow].push_back(vao);
+    // clean up
+    mMeshes.clear();
+    mMaterialCode = "";
+    mBonesByName.clear();
+    mBoneNodesByName.clear();
+    boneMap.clear();
 
-	// AABB
-	if (index > 0) // not first
-	{
-		subAABB.merge(pmeshv2->getAabb());
-	}
-	pmeshv2->_setBounds(subAABB);
-	pmeshv2->_setBoundingSphereRadius(subAABB.getRadius());
+    mCustomAnimationName = "";
+    // etc...
 
-	return true;
+    Ogre::MeshManager::getSingleton().removeUnreferencedResources();
+    Ogre::SkeletonManager::getSingleton().removeUnreferencedResources();
+
+    return true;
 }
 
-//typedef boost::tuple< aiVectorKey*, aiQuatKey*, aiVectorKey* > KeyframeData
-typedef std::tuple<aiVectorKey*, aiQuatKey*, aiVectorKey*> tpKeyframeData;
-typedef std::map< Ogre::Real, tpKeyframeData > mapKeyframes;
+
+typedef boost::tuple< aiVectorKey*, aiQuatKey*, aiVectorKey* > KeyframeData;
+typedef std::map< Ogre::Real, KeyframeData > KeyframesMap;
 
 template <int v>
 struct Int2Type
@@ -413,15 +343,17 @@ struct Int2Type
 };
 
 // T should be a Loki::Int2Type<>
-template< typename T > void GetInterpolationIterators(mapKeyframes& keyframes, mapKeyframes::iterator it, mapKeyframes::reverse_iterator& front, 
-	mapKeyframes::iterator& back)
+template< typename T > void GetInterpolationIterators(KeyframesMap& keyframes,
+                                                    KeyframesMap::iterator it,
+                                                    KeyframesMap::reverse_iterator& front,
+                                                    KeyframesMap::iterator& back)
 {
-    front = mapKeyframes::reverse_iterator(it);
+    front = KeyframesMap::reverse_iterator(it);
 
     front++;
     for(front; front != keyframes.rend(); front++)
     {
-        if(std::get< T::value >(front->second) != NULL)
+        if(boost::get< T::value >(front->second) != NULL)
         {
             break;
         }
@@ -431,16 +363,16 @@ template< typename T > void GetInterpolationIterators(mapKeyframes& keyframes, m
     back++;
     for(back; back != keyframes.end(); back++)
     {
-        if(std::get< T::value >(back->second) != NULL)
+        if(boost::get< T::value >(back->second) != NULL)
         {
             break;
         }
     }
 }
 
-aiVector3D getTranslate(aiNodeAnim* nodeanim, mapKeyframes& keyframes, mapKeyframes::iterator it, Ogre::Real ticksPerSecond)
+aiVector3D getTranslate(aiNodeAnim* node_anim, KeyframesMap& keyframes, KeyframesMap::iterator it, Ogre::Real ticksPerSecond)
 {
-    aiVectorKey* translateKey = std::get<0>(it->second);
+    aiVectorKey* translateKey = boost::get<0>(it->second);
     aiVector3D vect;
     if(translateKey)
     {
@@ -448,21 +380,22 @@ aiVector3D getTranslate(aiNodeAnim* nodeanim, mapKeyframes& keyframes, mapKeyfra
     }
     else
     {
-        mapKeyframes::reverse_iterator front;
-        mapKeyframes::iterator back;
+        KeyframesMap::reverse_iterator front;
+        KeyframesMap::iterator back;
+
 
         GetInterpolationIterators< Int2Type<0> > (keyframes, it, front, back);
 
-        mapKeyframes::reverse_iterator rend = keyframes.rend();
-        mapKeyframes::iterator end = keyframes.end();
+        KeyframesMap::reverse_iterator rend = keyframes.rend();
+        KeyframesMap::iterator end = keyframes.end();
         aiVectorKey* frontKey = NULL;
         aiVectorKey* backKey = NULL;
 
         if(front != rend)
-            frontKey = std::get<0>(front->second);
+            frontKey = boost::get<0>(front->second);
 
         if(back != end)
-            backKey = std::get<0>(back->second);
+            backKey = boost::get<0>(back->second);
 
         // got 2 keys can interpolate
         if(frontKey && backKey)
@@ -485,9 +418,9 @@ aiVector3D getTranslate(aiNodeAnim* nodeanim, mapKeyframes& keyframes, mapKeyfra
     return vect;
 }
 
-aiQuaternion getRotate(aiNodeAnim* nodeanim, mapKeyframes& keyframes, mapKeyframes::iterator it, Ogre::Real ticksPerSecond)
+aiQuaternion getRotate(aiNodeAnim* node_anim, KeyframesMap& keyframes, KeyframesMap::iterator it, Ogre::Real ticksPerSecond)
 {
-    aiQuatKey* rotationKey = std::get<1>(it->second);
+    aiQuatKey* rotationKey = boost::get<1>(it->second);
     aiQuaternion rot;
     if(rotationKey)
     {
@@ -495,21 +428,21 @@ aiQuaternion getRotate(aiNodeAnim* nodeanim, mapKeyframes& keyframes, mapKeyfram
     }
     else
     {
-		mapKeyframes::reverse_iterator front;
-		mapKeyframes::iterator back;
+        KeyframesMap::reverse_iterator front;
+        KeyframesMap::iterator back;
 
         GetInterpolationIterators< Int2Type<1> > (keyframes, it, front, back);
 
-		mapKeyframes::reverse_iterator rend = keyframes.rend();
-		mapKeyframes::iterator end = keyframes.end();
+        KeyframesMap::reverse_iterator rend = keyframes.rend();
+        KeyframesMap::iterator end = keyframes.end();
         aiQuatKey* frontKey = NULL;
         aiQuatKey* backKey = NULL;
 
         if(front != rend)
-            frontKey = std::get<1>(front->second);
+            frontKey = boost::get<1>(front->second);
 
         if(back != end)
-            backKey = std::get<1>(back->second);
+            backKey = boost::get<1>(back->second);
 
         // got 2 keys can interpolate
         if(frontKey && backKey)
@@ -532,8 +465,7 @@ aiQuaternion getRotate(aiNodeAnim* nodeanim, mapKeyframes& keyframes, mapKeyfram
     return rot;
 }
 
-// TODO: animation need test and debug.
-void AssimpLoader::parseAnimation (const aiScene* scene, int index, aiAnimation* anim)
+void AssimpLoader::parseAnimation (const aiScene* mScene, int index, aiAnimation* anim)
 {
     // DefBonePose a matrix that represents the local bone transform (can build from Ogre bone components)
     // PoseToKey a matrix representing the keyframe translation
@@ -566,7 +498,7 @@ void AssimpLoader::parseAnimation (const aiScene* scene, int index, aiAnimation*
         Ogre::LogManager::getSingleton().logMessage("tick/sec = " + Ogre::StringConverter::toString(Ogre::Real(anim->mTicksPerSecond)));
         Ogre::LogManager::getSingleton().logMessage("channels = " + Ogre::StringConverter::toString(anim->mNumChannels));
     }
-    Ogre::v1::Animation* animation;
+    Ogre::Animation* animation;
     mTicksPerSecond = (Ogre::Real)((0 == anim->mTicksPerSecond) ? 24 : anim->mTicksPerSecond);
     mTicksPerSecond *= mAnimationSpeedModifier;
 
@@ -611,7 +543,7 @@ void AssimpLoader::parseAnimation (const aiScene* scene, int index, aiAnimation*
         animation = mSkeleton->createAnimation(Ogre::String(animName), Ogre::Real(anim->mDuration/mTicksPerSecond));
     }
 
-    animation->setInterpolationMode(Ogre::v1::Animation::IM_LINEAR); //FIXME: Is this always true?
+    animation->setInterpolationMode(Ogre::Animation::IM_LINEAR); //FIXME: Is this always true?
 
     if(!mQuietMode)
     {
@@ -620,7 +552,7 @@ void AssimpLoader::parseAnimation (const aiScene* scene, int index, aiAnimation*
 
     for (int i = 0; i < (int)anim->mNumChannels; i++)
     {
-        Ogre::v1::TransformKeyFrame* keyframe;
+        Ogre::TransformKeyFrame* keyframe;
 
         aiNodeAnim* node_anim = anim->mChannels[i];
         if(!mQuietMode)
@@ -633,49 +565,51 @@ void AssimpLoader::parseAnimation (const aiScene* scene, int index, aiAnimation*
         }
 
         Ogre::String boneName = Ogre::String(node_anim->mNodeName.data);
+
         if(mSkeleton->hasBone(boneName))
         {
-            Ogre::v1::OldBone* bone = mSkeleton->getBone(boneName);
+            Ogre::Bone* bone = mSkeleton->getBone(boneName);
             Ogre::Matrix4 defBonePoseInv;
             defBonePoseInv.makeInverseTransform(bone->getPosition(), bone->getScale(), bone->getOrientation());
 
-			Ogre::v1::OldNodeAnimationTrack* oldtrack = animation->createOldNodeTrack(i, bone);
+            Ogre::NodeAnimationTrack* track = animation->createNodeTrack(i, bone);
 
             // Ogre needs translate rotate and scale for each keyframe in the track
-            mapKeyframes keyframes;
+            KeyframesMap keyframes;
+
             for(unsigned int i = 0; i < node_anim->mNumPositionKeys; i++)
             {
-                keyframes[ (Ogre::Real)node_anim->mPositionKeys[i].mTime / mTicksPerSecond ] = tpKeyframeData( &(node_anim->mPositionKeys[i]), NULL, NULL);
+                keyframes[ (Ogre::Real)node_anim->mPositionKeys[i].mTime / mTicksPerSecond ] = KeyframeData( &(node_anim->mPositionKeys[i]), NULL, NULL);
             }
 
             for(unsigned int i = 0; i < node_anim->mNumRotationKeys; i++)
             {
-                mapKeyframes::iterator it = keyframes.find((Ogre::Real)node_anim->mRotationKeys[i].mTime / mTicksPerSecond);
+                KeyframesMap::iterator it = keyframes.find((Ogre::Real)node_anim->mRotationKeys[i].mTime / mTicksPerSecond);
                 if(it != keyframes.end())
                 {
-                    std::get<1>(it->second) = &(node_anim->mRotationKeys[i]);
+                    boost::get<1>(it->second) = &(node_anim->mRotationKeys[i]);
                 }
                 else
                 {
-                    keyframes[ (Ogre::Real)node_anim->mRotationKeys[i].mTime / mTicksPerSecond ] = tpKeyframeData( NULL, &(node_anim->mRotationKeys[i]), NULL );
+                    keyframes[ (Ogre::Real)node_anim->mRotationKeys[i].mTime / mTicksPerSecond ] = KeyframeData( NULL, &(node_anim->mRotationKeys[i]), NULL );
                 }
             }
 
             for(unsigned int i = 0; i < node_anim->mNumScalingKeys; i++)
             {
-                mapKeyframes::iterator it = keyframes.find((Ogre::Real)node_anim->mScalingKeys[i].mTime / mTicksPerSecond);
+                KeyframesMap::iterator it = keyframes.find((Ogre::Real)node_anim->mScalingKeys[i].mTime / mTicksPerSecond);
                 if(it != keyframes.end())
                 {
-                    std::get<2>(it->second) = &(node_anim->mScalingKeys[i]);
+                    boost::get<2>(it->second) = &(node_anim->mScalingKeys[i]);
                 }
                 else
                 {
-                    keyframes[ (Ogre::Real)node_anim->mRotationKeys[i].mTime / mTicksPerSecond ] = tpKeyframeData( NULL, NULL, &(node_anim->mScalingKeys[i]) );
+                    keyframes[ (Ogre::Real)node_anim->mRotationKeys[i].mTime / mTicksPerSecond ] = KeyframeData( NULL, NULL, &(node_anim->mScalingKeys[i]) );
                 }
             }
 
-			mapKeyframes::iterator it = keyframes.begin();
-			mapKeyframes::iterator it_end = keyframes.end();
+            KeyframesMap::iterator it = keyframes.begin();
+            KeyframesMap::iterator it_end = keyframes.end();
             for(it; it != it_end; ++it)
             {
                 if(it->first < cutTime)	// or should it be <=
@@ -696,7 +630,7 @@ void AssimpLoader::parseAnimation (const aiScene* scene, int index, aiAnimation*
                     Ogre::Matrix4 poseTokey = defBonePoseInv * fullTransform;
                     poseTokey.decomposition(trans, scale, rot);
 
-                    keyframe = oldtrack->createNodeKeyFrame(Ogre::Real(it->first));
+                    keyframe = track->createNodeKeyFrame(Ogre::Real(it->first));
 
                     // weirdness with the root bone, But this seems to work
                     if(mSkeleton->getRootBone()->getName() == boneName)
@@ -716,59 +650,62 @@ void AssimpLoader::parseAnimation (const aiScene* scene, int index, aiAnimation*
     mSkeleton->optimiseAllAnimations();
 }
 
-void AssimpLoader::markAllChildNodesAsNeeded(const aiNode *node)
+
+
+void AssimpLoader::markAllChildNodesAsNeeded(const aiNode *pNode)
 {
-    flagNodeAsNeeded(node->mName.data);
+    flagNodeAsNeeded(pNode->mName.data);
     // Traverse all child nodes of the current node instance
-    for ( unsigned int childIdx=0; childIdx<node->mNumChildren; ++childIdx )
+    for ( unsigned int childIdx=0; childIdx<pNode->mNumChildren; ++childIdx )
     {
-        const aiNode *pChildNode = node->mChildren[ childIdx ];
+        const aiNode *pChildNode = pNode->mChildren[ childIdx ];
         markAllChildNodesAsNeeded(pChildNode);
     }
 }
 
-void AssimpLoader::grabNodeNamesFromNode(const aiScene* scene, const aiNode* node)
+void AssimpLoader::grabNodeNamesFromNode(const aiScene* mScene, const aiNode* pNode)
 {
-    Bonenode bNode;
-    bNode.node = const_cast<aiNode*>(node);
-    if(NULL != node->mParent)
+    boneNode bNode;
+    bNode.node = const_cast<aiNode*>(pNode);
+    if(NULL != pNode->mParent)
     {
-        bNode.parent = const_cast<aiNode*>(node->mParent);
+        bNode.parent = const_cast<aiNode*>(pNode->mParent);
     }
     bNode.isNeeded = false;
-    mBonenodes.insert(std::pair<Ogre::String, Bonenode>(Ogre::String(node->mName.data), bNode));
-    mNodesByName[node->mName.data] = node;
+    boneMap.insert(std::pair<Ogre::String, boneNode>(Ogre::String(pNode->mName.data), bNode));
+    mBoneNodesByName[pNode->mName.data] = pNode;
     if(!mQuietMode)
     {
-        Ogre::LogManager::getSingleton().logMessage("Node " + Ogre::String(node->mName.data) + " found.");
+        Ogre::LogManager::getSingleton().logMessage("Node " + Ogre::String(pNode->mName.data) + " found.");
     }
 
     // Traverse all child nodes of the current node instance
-    for ( unsigned int childIdx=0; childIdx<node->mNumChildren; ++childIdx )
+    for ( unsigned int childIdx=0; childIdx<pNode->mNumChildren; ++childIdx )
     {
-        const aiNode *pChildNode = node->mChildren[ childIdx ];
-        grabNodeNamesFromNode(scene, pChildNode);
+        const aiNode *pChildNode = pNode->mChildren[ childIdx ];
+        grabNodeNamesFromNode(mScene, pChildNode);
     }
 }
 
-void AssimpLoader::computeNodesDerivedTransform(const aiScene* scene, const aiNode *node, const aiMatrix4x4 accTransf)
+
+void AssimpLoader::computeNodesDerivedTransform(const aiScene* mScene,  const aiNode *pNode, const aiMatrix4x4 accTransform)
 {
-    if(mDerivedTransformsByName.find(node->mName.data) == mDerivedTransformsByName.end())
+    if(mNodeDerivedTransformByName.find(pNode->mName.data) == mNodeDerivedTransformByName.end())
     {
-		mDerivedTransformsByName[node->mName.data] = accTransf;
+        mNodeDerivedTransformByName[pNode->mName.data] = accTransform;
     }
-    for ( unsigned int childIdx=0; childIdx<node->mNumChildren; ++childIdx )
+    for ( unsigned int childIdx=0; childIdx<pNode->mNumChildren; ++childIdx )
     {
-        const aiNode *pChildNode = node->mChildren[ childIdx ];
-        computeNodesDerivedTransform(scene, pChildNode, accTransf * pChildNode->mTransformation);
+        const aiNode *pChildNode = pNode->mChildren[ childIdx ];
+        computeNodesDerivedTransform(mScene, pChildNode, accTransform * pChildNode->mTransformation);
     }
 }
 
-void AssimpLoader::createBonesFromNode(const aiScene* scene, const aiNode *node)
+void AssimpLoader::createBonesFromNode(const aiScene* mScene,  const aiNode *pNode)
 {
-    if(isNodeNeeded(node->mName.data))
+    if(isNodeNeeded(pNode->mName.data))
     {
-        Ogre::v1::OldBone* bone = mSkeleton->createBone(Ogre::String(node->mName.data), _msBoneCount);
+        Ogre::Bone* bone = mSkeleton->createBone(Ogre::String(pNode->mName.data), msBoneCount);
 
         aiQuaternion rot;
         aiVector3D pos;
@@ -776,6 +713,7 @@ void AssimpLoader::createBonesFromNode(const aiScene* scene, const aiNode *node)
 
         /*
         aiMatrix4x4 aiM = mNodeDerivedTransformByName.find(pNode->mName.data)->second;
+
         const aiNode* parentNode = NULL;
         {
             boneMapType::iterator it = boneMap.find(pNode->mName.data);
@@ -792,8 +730,10 @@ void AssimpLoader::createBonesFromNode(const aiScene* scene, const aiNode *node)
         */
 
         // above should be the same as
-        aiMatrix4x4 aiM = node->mTransformation;
+        aiMatrix4x4 aiM = pNode->mTransformation;
+
         aiM.Decompose(scale, rot, pos);
+
 
         /*
         // debug render
@@ -827,34 +767,34 @@ void AssimpLoader::createBonesFromNode(const aiScene* scene, const aiNode *node)
 
         if(!mQuietMode)
         {
-            Ogre::LogManager::getSingleton().logMessage(Ogre::StringConverter::toString(_msBoneCount) + ") Creating bone '" + Ogre::String(node->mName.data) + "'");
+            Ogre::LogManager::getSingleton().logMessage(Ogre::StringConverter::toString(msBoneCount) + ") Creating bone '" + Ogre::String(pNode->mName.data) + "'");
         }
-        _msBoneCount++;
+        msBoneCount++;
     }
     // Traverse all child nodes of the current node instance
-    for ( unsigned int childIdx=0; childIdx<node->mNumChildren; ++childIdx )
+    for ( unsigned int childIdx=0; childIdx<pNode->mNumChildren; ++childIdx )
     {
-        const aiNode *pChildNode = node->mChildren[ childIdx ];
-        createBonesFromNode(scene, pChildNode);
+        const aiNode *pChildNode = pNode->mChildren[ childIdx ];
+        createBonesFromNode(mScene, pChildNode);
     }
 }
 
-void AssimpLoader::createBoneHiearchy(const aiScene* scene, const aiNode *node)
+void AssimpLoader::createBoneHiearchy(const aiScene* mScene,  const aiNode *pNode)
 {
-    if(isNodeNeeded(node->mName.data))
+    if(isNodeNeeded(pNode->mName.data))
     {
-        Ogre::v1::OldBone* parent = 0;
-        Ogre::v1::OldBone* child = 0;
-        if(node->mParent)
+        Ogre::Bone* parent = 0;
+        Ogre::Bone* child = 0;
+        if(pNode->mParent)
         {
-            if(mSkeleton->hasBone(node->mParent->mName.data))
+            if(mSkeleton->hasBone(pNode->mParent->mName.data))
             {
-                parent = mSkeleton->getBone(node->mParent->mName.data);
+                parent = mSkeleton->getBone(pNode->mParent->mName.data);
             }
         }
-        if(mSkeleton->hasBone(node->mName.data))
+        if(mSkeleton->hasBone(pNode->mName.data))
         {
-            child = mSkeleton->getBone(node->mName.data);
+            child = mSkeleton->getBone(pNode->mName.data);
         }
         if(parent && child)
         {
@@ -862,17 +802,17 @@ void AssimpLoader::createBoneHiearchy(const aiScene* scene, const aiNode *node)
         }
     }
     // Traverse all child nodes of the current node instance
-    for ( unsigned int childIdx=0; childIdx<node->mNumChildren; childIdx++ )
+    for ( unsigned int childIdx=0; childIdx<pNode->mNumChildren; childIdx++ )
     {
-        const aiNode *pChildNode = node->mChildren[ childIdx ];
-        createBoneHiearchy(scene, pChildNode);
+        const aiNode *pChildNode = pNode->mChildren[ childIdx ];
+        createBoneHiearchy(mScene, pChildNode);
     }
 }
 
 void AssimpLoader::flagNodeAsNeeded(const char* name)
 {
-    mapBonenode::iterator iter = mBonenodes.find(Ogre::String(name));
-    if( iter != mBonenodes.end())
+    boneMapType::iterator iter = boneMap.find(Ogre::String(name));
+    if( iter != boneMap.end())
     {
         iter->second.isNeeded = true;
     }
@@ -880,23 +820,24 @@ void AssimpLoader::flagNodeAsNeeded(const char* name)
 
 bool AssimpLoader::isNodeNeeded(const char* name)
 {
-    mapBonenode::iterator iter = mBonenodes.find(Ogre::String(name));
-    if( iter != mBonenodes.end())
+    boneMapType::iterator iter = boneMap.find(Ogre::String(name));
+    if( iter != boneMap.end())
     {
         return iter->second.isNeeded;
     }
     return false;
 }
 
-void AssimpLoader::grabBoneNamesFromNode(const aiScene* scene, const aiNode *node)
+void AssimpLoader::grabBoneNamesFromNode(const aiScene* mScene,  const aiNode *pNode)
 {
-    static int _meshNum = 0;
-    _meshNum++;
-    if(node->mNumMeshes > 0)
+    static int meshNum = 0;
+    meshNum++;
+    if(pNode->mNumMeshes > 0)
     {
-        for ( unsigned int idx=0; idx<node->mNumMeshes; ++idx )
+        for ( unsigned int idx=0; idx<pNode->mNumMeshes; ++idx )
         {
-            aiMesh *pAIMesh = scene->mMeshes[node->mMeshes[ idx ] ];
+            aiMesh *pAIMesh = mScene->mMeshes[ pNode->mMeshes[ idx ] ];
+
             if(pAIMesh->HasBones())
             {
                 for ( Ogre::uint32 i=0; i < pAIMesh->mNumBones; ++i )
@@ -905,22 +846,22 @@ void AssimpLoader::grabBoneNamesFromNode(const aiScene* scene, const aiNode *nod
                     if ( NULL != pAIBone )
                     {
                         mBonesByName[pAIBone->mName.data] = pAIBone;
+
                         if(!mQuietMode)
                         {
-                            Ogre::LogManager::getSingleton().logMessage(
-								Ogre::StringConverter::toString(i) + ") REAL BONE with name : " + Ogre::String(pAIBone->mName.data) );
+                            Ogre::LogManager::getSingleton().logMessage(Ogre::StringConverter::toString(i) + ") REAL BONE with name : " + Ogre::String(pAIBone->mName.data));
                         }
 
                         // flag this node and all parents of this node as needed, until we reach the node holding the mesh, or the parent.
-                        aiNode* node = scene->mRootNode->FindNode(pAIBone->mName.data);
+                        aiNode* node = mScene->mRootNode->FindNode(pAIBone->mName.data);
                         while(node)
                         {
-                            if(node->mName.data == node->mName.data)
+                            if(node->mName.data == pNode->mName.data)
                             {
                                 flagNodeAsNeeded(node->mName.data);
                                 break;
                             }
-                            if(node->mName.data == node->mParent->mName.data)
+                            if(node->mName.data == pNode->mParent->mName.data)
                             {
                                 flagNodeAsNeeded(node->mName.data);
                                 break;
@@ -932,7 +873,7 @@ void AssimpLoader::grabBoneNamesFromNode(const aiScene* scene, const aiNode *nod
                         }
 
                         // Flag all children of this node as needed
-                        node = scene->mRootNode->FindNode(pAIBone->mName.data);
+                        node = mScene->mRootNode->FindNode(pAIBone->mName.data);
                         markAllChildNodesAsNeeded(node);
 
                     } // if we have a valid bone
@@ -942,16 +883,16 @@ void AssimpLoader::grabBoneNamesFromNode(const aiScene* scene, const aiNode *nod
     } // if this node has meshes
 
     // Traverse all child nodes of the current node instance
-    for ( unsigned int childIdx=0; childIdx<node->mNumChildren; childIdx++ )
+    for ( unsigned int childIdx=0; childIdx<pNode->mNumChildren; childIdx++ )
     {
-        const aiNode *pChildNode = node->mChildren[ childIdx ];
-        grabBoneNamesFromNode(scene, pChildNode);
+        const aiNode *pChildNode = pNode->mChildren[ childIdx ];
+        grabBoneNamesFromNode(mScene, pChildNode);
     }
 }
 
-Ogre::String ReplaceSpaces(const Ogre::String& ss)
+Ogre::String ReplaceSpaces(const Ogre::String& s)
 {
-    Ogre::String res(ss);
+    Ogre::String res(s);
     replace(res.begin(), res.end(), ' ', '_');
 
     return res;
@@ -960,11 +901,16 @@ Ogre::String ReplaceSpaces(const Ogre::String& ss)
 Ogre::MaterialPtr AssimpLoader::createMaterialByScript(int index, const aiMaterial* mat)
 {
     // Create a material in code as using script inheritance variable substitution and other goodies
+
     Ogre::MaterialManager* matMgr = Ogre::MaterialManager::getSingletonPtr();
     Ogre::String materialName = mBasename + "#" + Ogre::StringConverter::toString(index);
     if(matMgr->resourceExists(materialName))
     {
+#if (OGRE_VERSION < ((1 << 16) | (9 << 8) | 0))
+        Ogre::MaterialPtr matPtr = matMgr->getByName(materialName);
+#else
         Ogre::MaterialPtr matPtr = matMgr->getByName(materialName).staticCast<Ogre::Material>();
+#endif
         if(matPtr->isLoaded())
         {
             return matPtr;
@@ -972,22 +918,24 @@ Ogre::MaterialPtr AssimpLoader::createMaterialByScript(int index, const aiMateri
     }
 
     Ogre::String code;
+
     aiColor4D c;
     if(aiGetMaterialColor(mat, AI_MATKEY_COLOR_AMBIENT,  &c) == aiReturn_SUCCESS)
         code += "\t\t\tambient " + toString(c) + "\n";
+
     if(aiGetMaterialColor(mat, AI_MATKEY_COLOR_DIFFUSE, &c) == aiReturn_SUCCESS)
         code += "\t\t\tdiffuse " + toString(c) + "\n";
+
     if(aiGetMaterialColor(mat, AI_MATKEY_COLOR_SPECULAR, &c) == aiReturn_SUCCESS)
         code += "\t\t\tspecular " + toString(c) + "\n";
+
     if(aiGetMaterialColor(mat, AI_MATKEY_COLOR_EMISSIVE, &c) == aiReturn_SUCCESS)
         code += "\t\t\temissive " + toString(c) + "\n";
 
     int shade = aiShadingMode_NoShading;
     if (AI_SUCCESS == mat->Get(AI_MATKEY_SHADING_MODEL, shade) && shade != aiShadingMode_NoShading) { 
         switch (shade) {
-            case aiShadingMode_Phong:
-			// Phong shading mode was added to opengl and directx years ago to be ready for gpus to support it (in fixed function pipeline), 
-			// but no gpus ever did, so it has never done anything. From directx 10 onwards it was removed again.
+            case aiShadingMode_Phong: // Phong shading mode was added to opengl and directx years ago to be ready for gpus to support it (in fixed function pipeline), but no gpus ever did, so it has never done anything. From directx 10 onwards it was removed again.
             case aiShadingMode_Gouraud:
                 code += "\t\t\tshading gouraud\n";
                 break;
@@ -1001,18 +949,25 @@ Ogre::MaterialPtr AssimpLoader::createMaterialByScript(int index, const aiMateri
 
     // Specifies the type of the texture to be retrieved ( e.g. diffuse, specular, height map ...)
     enum aiTextureType type = aiTextureType_DIFFUSE;
+
     // Index of the texture to be retrieved. The function fails if there is no texture of that type with this index.
     // GetTextureCount() can be used to determine the number of textures per texture type.
+
     // Receives the path to the texture. NULL is a valid value.
     aiString path;
+
     // The texture mapping. NULL is allowed as value.
     aiTextureMapping mapping = aiTextureMapping_UV;
+
     // Receives the UV index of the texture. NULL is a valid value.
     unsigned int uvindex = 0;
+
     // Receives the blend factor for the texture NULL is a valid value.
     float blend = 1.0f;
+
     // Receives the texture operation to be performed between this texture and the previous texture. NULL is allowed as value.
     aiTextureOp op = aiTextureOp_Multiply;
+
     // Receives the mapping modes to be used for the texture. The parameter may be NULL but if it is a valid pointer it
     // MUST point to an array of 3 aiTextureMapMode's (one for each axis: UVW order (=XYZ)).
     aiTextureMapMode mapmode[3] =  { aiTextureMapMode_Wrap, aiTextureMapMode_Wrap, aiTextureMapMode_Wrap };    // mapmode
@@ -1022,20 +977,25 @@ Ogre::MaterialPtr AssimpLoader::createMaterialByScript(int index, const aiMateri
     {
         Ogre::String texBasename, texExtention, texPath;
         Ogre::StringUtil::splitFullFilename(Ogre::String(path.data), texBasename, texExtention, texPath);
+
         Ogre::String texName = texBasename + "." + texExtention;
+
         int twoSided = 0;
         mat->Get(AI_MATKEY_TWOSIDED, twoSided);
         if(twoSided != 0)
         {
             code += "\t\t\t\tcull_hardware none\n";
         }
+
         //code += "\tset $diffuse_map " + texName + "\n";
         code += "\n\t\t\ttexture_unit\n\t\t\t{\n\t\t\t\ttexture " + texName + "\n";
+
         // no infomation on the alpha channel in the texture will have to load the texture and look at it
         code += "\t\t\t}\n";
     }
 
     code = "\ttechnique\n\t{\n\t\tpass\n\t\t{\n" + code + "\t\t}\n\t}\n";
+
     //code = "material " + materialName + " : base\n{\n" + code + "}\n\n";
     code = "material " + materialName + "\n{\n" + code + "}\n\n";
     mMaterialCode += code;
@@ -1047,33 +1007,36 @@ Ogre::MaterialPtr AssimpLoader::createMaterialByScript(int index, const aiMateri
     std::cout << code << std::endl;
     std::cout << "-------------------------------------------code" << std::endl;*/
 
-    Ogre::DataStreamPtr stream(OGRE_NEW Ogre::MemoryDataStream(
-									const_cast<void*>( static_cast<const void*>(code.c_str()) ), 
-									code.length() * sizeof(char), 
-									false) );
+    Ogre::DataStreamPtr stream(OGRE_NEW Ogre::MemoryDataStream(const_cast<void*>(static_cast<const void*>(code.c_str())),
+                                                code.length() * sizeof(char), false));
     Ogre::MaterialManager::getSingleton().parseScript(stream, Ogre::ResourceGroupManager::DEFAULT_RESOURCE_GROUP_NAME);
+#if (OGRE_VERSION < ((1 << 16) | (9 << 8) | 0))
+    Ogre::MaterialPtr omat = Ogre::MaterialManager::getSingleton().getByName(materialName);
+#else
     Ogre::MaterialPtr omat = Ogre::MaterialManager::getSingleton().getByName(materialName).staticCast<Ogre::Material>();
+#endif
     //omat->compile(false);
     //omat->load();
 
     return omat;
 }
 
-Ogre::MaterialPtr AssimpLoader::createMaterial(int index, const aiMaterial* mat, const Ogre::String& dir)
+Ogre::MaterialPtr AssimpLoader::createMaterial(int index, const aiMaterial* mat, const Ogre::String& mDir)
 {
-    static int _dummyMatCount = 0;
+    static int dummyMatCount = 0;
+
     // extreme fallback texture -- 2x2 hot pink
-    static Ogre::uint8 _sRGB[] = {128, 0, 255, 128, 0, 255, 128, 0, 255, 128, 0, 255};
+    static Ogre::uint8 s_RGB[] = {128, 0, 255, 128, 0, 255, 128, 0, 255, 128, 0, 255};
 
     std::ostringstream matname;
-    Ogre::MaterialManager* omatMgr = Ogre::MaterialManager::getSingletonPtr();
+    Ogre::MaterialManager* omatMgr =  Ogre::MaterialManager::getSingletonPtr();
     enum aiTextureType type = aiTextureType_DIFFUSE;
-    static aiString _path;
+    static aiString path;
     aiTextureMapping mapping = aiTextureMapping_UV;       // the mapping (should be uv for now)
     unsigned int uvindex = 0;                             // the texture uv index channel
     float blend = 1.0f;                                   // blend
     aiTextureOp op = aiTextureOp_Multiply;                // op
-    aiTextureMapMode mapmode[3] = { aiTextureMapMode_Wrap, aiTextureMapMode_Wrap, aiTextureMapMode_Wrap }; // mapmode
+    aiTextureMapMode mapmode[3] =  { aiTextureMapMode_Wrap, aiTextureMapMode_Wrap, aiTextureMapMode_Wrap };	// mapmode
     std::ostringstream texname;
 
     aiString szPath;
@@ -1081,8 +1044,7 @@ Ogre::MaterialPtr AssimpLoader::createMaterial(int index, const aiMaterial* mat,
     {
         if(!mQuietMode)
         {
-            Ogre::LogManager::getSingleton().logMessage(
-				"Using aiGetMaterialString : Found texture " + Ogre::String(szPath.data) + " for channel " + Ogre::StringConverter::toString(uvindex) );
+            Ogre::LogManager::getSingleton().logMessage("Using aiGetMaterialString : Found texture " + Ogre::String(szPath.data) + " for channel " + Ogre::StringConverter::toString(uvindex));
         }
     }
     if(szPath.length < 1)
@@ -1091,8 +1053,8 @@ Ogre::MaterialPtr AssimpLoader::createMaterial(int index, const aiMaterial* mat,
         {
             Ogre::LogManager::getSingleton().logMessage("Didn't find any texture units...");
         }
-        szPath = Ogre::String("dummyMat" + Ogre::StringConverter::toString(_dummyMatCount)).c_str();
-        _dummyMatCount++;
+        szPath = Ogre::String("dummyMat" + Ogre::StringConverter::toString(dummyMatCount)).c_str();
+        dummyMatCount++;
     }
 
     Ogre::String basename;
@@ -1104,28 +1066,35 @@ Ogre::MaterialPtr AssimpLoader::createMaterial(int index, const aiMaterial* mat,
     }
 
     Ogre::ResourceManager::ResourceCreateOrRetrieveResult status = omatMgr->createOrRetrieve(ReplaceSpaces(basename), Ogre::ResourceGroupManager::DEFAULT_RESOURCE_GROUP_NAME, true);
+#if (OGRE_VERSION < ((1 << 16) | (9 << 8) | 0))
+    Ogre::MaterialPtr omat = status.first;
+#else
     Ogre::MaterialPtr omat = status.first.staticCast<Ogre::Material>();
+#endif
     if (!status.second)
         return omat;
 
     // ambient
     aiColor4D clr(1.0f, 1.0f, 1.0f, 1.0);
     //Ambient is usually way too low! FIX ME!
-    if (mat->GetTexture(type, 0, &_path) != AI_SUCCESS)
+    if (mat->GetTexture(type, 0, &path) != AI_SUCCESS)
         aiGetMaterialColor(mat, AI_MATKEY_COLOR_AMBIENT,  &clr);
     omat->setAmbient(clr.r, clr.g, clr.b);
+
     // diffuse
     clr = aiColor4D(1.0f, 1.0f, 1.0f, 1.0f);
     if(AI_SUCCESS == aiGetMaterialColor(mat, AI_MATKEY_COLOR_DIFFUSE, &clr))
     {
         omat->setDiffuse(clr.r, clr.g, clr.b, clr.a);
     }
+
     // specular
     clr = aiColor4D(1.0f, 1.0f, 1.0f, 1.0f);
     if(AI_SUCCESS == aiGetMaterialColor(mat, AI_MATKEY_COLOR_SPECULAR, &clr))
     {
         omat->setSpecular(clr.r, clr.g, clr.b, clr.a);
     }
+
     // emissive
     clr = aiColor4D(1.0f, 1.0f, 1.0f, 1.0f);
     if(AI_SUCCESS == aiGetMaterialColor(mat, AI_MATKEY_COLOR_EMISSIVE, &clr))
@@ -1142,9 +1111,7 @@ Ogre::MaterialPtr AssimpLoader::createMaterial(int index, const aiMaterial* mat,
     int shade = aiShadingMode_NoShading;
     if (AI_SUCCESS == mat->Get(AI_MATKEY_SHADING_MODEL, shade) && shade != aiShadingMode_NoShading) { 
         switch (shade) {
-        case aiShadingMode_Phong:
-			// Phong shading mode was added to opengl and directx years ago to be ready for gpus to support it (in fixed function pipeline), 
-			// but no gpus ever did, so it has never done anything. From directx 10 onwards it was removed again.
+        case aiShadingMode_Phong: // Phong shading mode was added to opengl and directx years ago to be ready for gpus to support it (in fixed function pipeline), but no gpus ever did, so it has never done anything. From directx 10 onwards it was removed again.
         case aiShadingMode_Gouraud:
             omat->setShadingMode(Ogre::SO_GOURAUD);
             break;
@@ -1156,46 +1123,46 @@ Ogre::MaterialPtr AssimpLoader::createMaterial(int index, const aiMaterial* mat,
         }
     }
 
-    if (mat->GetTexture(type, 0, &_path) == AI_SUCCESS)
+    if (mat->GetTexture(type, 0, &path) == AI_SUCCESS)
     {
         if(!mQuietMode)
         {
-            Ogre::LogManager::getSingleton().logMessage(
-				"Found texture " + Ogre::String(_path.data) + " for channel " + Ogre::StringConverter::toString(uvindex) );
+            Ogre::LogManager::getSingleton().logMessage("Found texture " + Ogre::String(path.data) + " for channel " + Ogre::StringConverter::toString(uvindex));
         }
         if(AI_SUCCESS == aiGetMaterialString(mat, AI_MATKEY_TEXTURE_DIFFUSE(0), &szPath))
         {
             if(!mQuietMode)
             {
-                Ogre::LogManager::getSingleton().logMessage(
-					"Using aiGetMaterialString : Found texture " + Ogre::String(szPath.data) + " for channel " + Ogre::StringConverter::toString(uvindex) );
+                Ogre::LogManager::getSingleton().logMessage("Using aiGetMaterialString : Found texture " + Ogre::String(szPath.data) + " for channel " + Ogre::StringConverter::toString(uvindex));
             }
         }
 
         // attempt to load the image
         Ogre::Image image;
+
         // possibly if we fail to actually find it, pop up a box?
-        Ogre::String pathname(dir + "\\" + _path.data);
+        Ogre::String pathname(mDir + "\\" + path.data);
+
         std::ifstream imgstream;
-        imgstream.open(_path.data, std::ios::binary);
+        imgstream.open(path.data, std::ios::binary);
         if(!imgstream.is_open())
-            imgstream.open(Ogre::String(mPath + Ogre::String("\\") + Ogre::String(_path.data)).c_str(), std::ios::binary);
+            imgstream.open(Ogre::String(mPath + Ogre::String("\\") + Ogre::String(path.data)).c_str(), std::ios::binary);
 
         if (imgstream.is_open())
         {
             // Wrap as a stream
-            Ogre::DataStreamPtr strm(OGRE_NEW Ogre::FileStreamDataStream(_path.data, &imgstream, false));
+            Ogre::DataStreamPtr strm(OGRE_NEW Ogre::FileStreamDataStream(path.data, &imgstream, false));
+
             if (!strm->size() || strm->size() == 0xffffffff)
             {
                 // fall back to our very simple and very hardcoded hot-pink version
-                Ogre::DataStreamPtr altStrm(OGRE_NEW Ogre::MemoryDataStream(_sRGB, sizeof(_sRGB)));
+                Ogre::DataStreamPtr altStrm(OGRE_NEW Ogre::MemoryDataStream(s_RGB, sizeof(s_RGB)));
                 image.loadRawData(altStrm, 2, 2, Ogre::PF_R8G8B8);
                 if(!mQuietMode)
                 {
                     Ogre::LogManager::getSingleton().logMessage("Could not load texture, falling back to hotpink");
                 }
-            }
-			else
+            } else
             {
                 // extract extension from filename
                 size_t pos = pathname.find_last_of('.');
@@ -1203,11 +1170,9 @@ Ogre::MaterialPtr AssimpLoader::createMaterial(int index, const aiMaterial* mat,
                 image.load(strm, ext);
                 imgstream.close();
             }
-        }
-		else
-		{
+        } else {
             // fall back to our very simple and very hardcoded hot-pink version
-            Ogre::DataStreamPtr altStrm(OGRE_NEW Ogre::MemoryDataStream(_sRGB, sizeof(_sRGB)));
+            Ogre::DataStreamPtr altStrm(OGRE_NEW Ogre::MemoryDataStream(s_RGB, sizeof(s_RGB)));
             image.loadRawData(altStrm, 2, 2, Ogre::PF_R8G8B8);
             if(!mQuietMode)
             {
@@ -1218,11 +1183,293 @@ Ogre::MaterialPtr AssimpLoader::createMaterial(int index, const aiMaterial* mat,
 		// Ogre::TextureManager::getSingleton().loadImage(Ogre::String(szPath.data), Ogre::ResourceGroupManager::DEFAULT_RESOURCE_GROUP_NAME, image);
         //TODO: save this to materials/textures ?
         Ogre::TextureUnitState* texUnitState = omat->getTechnique(0)->getPass(0)->createTextureUnitState(basename);
+
     }
 
     omat->load(); // would need a rendersystem
+
     return omat;
 }
 
+
+bool AssimpLoader::createSubMesh(const Ogre::String& name, int index, const aiNode* pNode, const aiMesh *mesh, const aiMaterial* mat, Ogre::MeshPtr mMesh, Ogre::AxisAlignedBox& mAAB, const Ogre::String& mDir)
+{
+    // if animated all submeshes must have bone weights
+    if(mBonesByName.size() && !mesh->HasBones())
+    {
+        if(!mQuietMode)
+        {
+            Ogre::LogManager::getSingleton().logMessage("Skipping Mesh " + Ogre::String(mesh->mName.data) + "with no bone weights");
+        }
+        return false;
+    }
+
+    Ogre::MaterialPtr matptr;
+
+    if((mLoaderParams & LP_GENERATE_MATERIALS_AS_CODE) == 0)
+    {
+        matptr = createMaterial(mesh->mMaterialIndex, mat, mDir);
+    }
+    else
+    {
+        matptr = createMaterialByScript(mesh->mMaterialIndex, mat);
+    }
+
+    // now begin the object definition
+    // We create a submesh per material
+    Ogre::SubMesh* submesh = mMesh->createSubMesh(name + Ogre::StringConverter::toString(index));
+
+    // prime pointers to vertex related data
+    aiVector3D *vec = mesh->mVertices;
+    aiVector3D *norm = mesh->mNormals;
+    aiVector3D *uv = mesh->mTextureCoords[0];
+    //aiColor4D *col = mesh->mColors[0];
+
+    // We must create the vertex data, indicating how many vertices there will be
+    submesh->useSharedVertices = false;
+    submesh->vertexData = new Ogre::VertexData();
+    submesh->vertexData->vertexStart = 0;
+    submesh->vertexData->vertexCount = mesh->mNumVertices;
+
+    // We must now declare what the vertex data contains
+    Ogre::VertexDeclaration* declaration = submesh->vertexData->vertexDeclaration;
+    static const unsigned short source = 0;
+    size_t offset = 0;
+    offset += declaration->addElement(source,offset,Ogre::VET_FLOAT3,Ogre::VES_POSITION).getSize();
+
+    //mLog->logMessage((boost::format(" %d vertices ") % m->mNumVertices).str());
+    if(!mQuietMode)
+    {
+        Ogre::LogManager::getSingleton().logMessage(Ogre::StringConverter::toString(mesh->mNumVertices) + " vertices");
+    }
+    if (norm)
+    {
+        if(!mQuietMode)
+        {
+            Ogre::LogManager::getSingleton().logMessage(Ogre::StringConverter::toString(mesh->mNumVertices) + " normals");
+        }
+        //mLog->logMessage((boost::format(" %d normals ") % m->mNumVertices).str() );
+        offset += declaration->addElement(source,offset,Ogre::VET_FLOAT3,Ogre::VES_NORMAL).getSize();
+    }
+
+    if (uv)
+    {
+        if(!mQuietMode)
+        {
+            Ogre::LogManager::getSingleton().logMessage(Ogre::StringConverter::toString(mesh->mNumVertices) + " uvs");
+        }
+        //mLog->logMessage((boost::format(" %d uvs ") % m->mNumVertices).str() );
+        offset += declaration->addElement(source,offset,Ogre::VET_FLOAT2,Ogre::VES_TEXTURE_COORDINATES).getSize();
+    }
+
+    /*
+    if (col)
+    {
+        Ogre::LogManager::getSingleton().logMessage(Ogre::StringConverter::toString(mesh->mNumVertices) + " colours");
+        //mLog->logMessage((boost::format(" %d colours ") % m->mNumVertices).str() );
+        offset += declaration->addElement(source,offset,Ogre::VET_FLOAT3,Ogre::VES_DIFFUSE).getSize();
+    }
+    */
+
+
+    // We create the hardware vertex buffer
+    Ogre::HardwareVertexBufferSharedPtr vbuffer =
+        Ogre::HardwareBufferManager::getSingleton().createVertexBuffer(declaration->getVertexSize(source), // == offset
+        submesh->vertexData->vertexCount,   // == nbVertices
+        Ogre::HardwareBuffer::HBU_STATIC_WRITE_ONLY);
+
+    aiMatrix4x4 aiM = mNodeDerivedTransformByName.find(pNode->mName.data)->second;
+
+
+    // Now we get access to the buffer to fill it.  During so we record the bounding box.
+    float* vdata = static_cast<float*>(vbuffer->lock(Ogre::HardwareBuffer::HBL_DISCARD));
+    for (size_t i=0;i < mesh->mNumVertices; ++i)
+    {
+        // Position
+        aiVector3D vect;
+        vect.x = vec->x;
+        vect.y = vec->y;
+        vect.z = vec->z;
+
+        vect *= aiM;
+
+        /*
+        if(NULL != mSkeletonRootNode)
+        {
+            vect *= mSkeletonRootNode->mTransformation;
+        }
+        */
+
+        Ogre::Vector3 position( vect.x, vect.y, vect.z );
+        *vdata++ = vect.x;
+        *vdata++ = vect.y;
+        *vdata++ = vect.z;
+        mAAB.merge(position);
+        vec++;
+
+        // Normal
+        if (norm)
+        {
+            vect.x = norm->x;
+            vect.y = norm->y;
+            vect.z = norm->z;
+
+            vect *= aiM;
+
+            *vdata++ = vect.x;
+            *vdata++ = vect.y;
+            *vdata++ = vect.z;
+            norm++;
+
+            //*vdata++ = norm->x;
+            //*vdata++ = norm->y;
+            //*vdata++ = norm->z;
+            //norm++;
+        }
+
+        // uvs
+        if (uv)
+        {
+            *vdata++ = uv->x;
+            *vdata++ = uv->y;
+            uv++;
+        }
+
+        /*
+        if (col)
+        {
+            *vdata++ = col->r;
+            *vdata++ = col->g;
+            *vdata++ = col->b;
+            //*vdata++ = col->a;
+            //col++;
+        }
+        */
+    }
+
+    vbuffer->unlock();
+    submesh->vertexData->vertexBufferBinding->setBinding(source,vbuffer);
+
+    if(!mQuietMode)
+    {
+        Ogre::LogManager::getSingleton().logMessage(Ogre::StringConverter::toString(mesh->mNumFaces) + " faces");
+    }
+    aiFace *faces = mesh->mFaces;
+
+    // Creates the index data
+    submesh->indexData->indexStart = 0;
+    submesh->indexData->indexCount = mesh->mNumFaces * 3;
+
+    if (submesh->indexData->indexCount >= 65536) // 32 bit index buffer
+    {
+            submesh->indexData->indexBuffer = Ogre::HardwareBufferManager::getSingleton().createIndexBuffer(
+                    Ogre::HardwareIndexBuffer::IT_32BIT, submesh->indexData->indexCount, Ogre::HardwareBuffer::HBU_STATIC_WRITE_ONLY);
+
+            Ogre::uint32* indexData = static_cast<Ogre::uint32*>(submesh->indexData->indexBuffer->lock(Ogre::HardwareBuffer::HBL_DISCARD));
+
+            for (size_t i=0; i < mesh->mNumFaces;++i)
+            {
+                    *indexData++ = faces->mIndices[0];
+                    *indexData++ = faces->mIndices[1];
+                    *indexData++ = faces->mIndices[2];
+
+                    faces++;
+            }
+    }
+    else // 16 bit index buffer
+    {
+            submesh->indexData->indexBuffer = Ogre::HardwareBufferManager::getSingleton().createIndexBuffer(
+            Ogre::HardwareIndexBuffer::IT_16BIT, submesh->indexData->indexCount, Ogre::HardwareBuffer::HBU_STATIC_WRITE_ONLY);
+
+            Ogre::uint16* indexData = static_cast<Ogre::uint16*>(submesh->indexData->indexBuffer->lock(Ogre::HardwareBuffer::HBL_DISCARD));
+
+            for (size_t i=0; i < mesh->mNumFaces;++i)
+            {
+                    *indexData++ = faces->mIndices[0];
+                    *indexData++ = faces->mIndices[1];
+                    *indexData++ = faces->mIndices[2];
+
+                    faces++;
+            }
+    }
+
+    submesh->indexData->indexBuffer->unlock();
+
+    // set bone weigths
+    if(mesh->HasBones())
+    {
+        for ( Ogre::uint32 i=0; i < mesh->mNumBones; i++ )
+        {
+            aiBone *pAIBone = mesh->mBones[ i ];
+            if ( NULL != pAIBone )
+            {
+                Ogre::String bname = pAIBone->mName.data;
+                for ( Ogre::uint32 weightIdx = 0; weightIdx < pAIBone->mNumWeights; weightIdx++ )
+                {
+                    aiVertexWeight aiWeight = pAIBone->mWeights[ weightIdx ];
+
+                    Ogre::VertexBoneAssignment vba;
+                    vba.vertexIndex = aiWeight.mVertexId;
+                    vba.boneIndex = mSkeleton->getBone(bname)->getHandle();
+                    vba.weight= aiWeight.mWeight;
+
+                    submesh->addBoneAssignment(vba);
+                }
+            }
+        }
+    } // if mesh has bones
+
+    // Finally we set a material to the submesh
+    if (!matptr.isNull())
+        submesh->setMaterialName(matptr->getName());
+
+    return true;
 }
+
+void AssimpLoader::loadDataFromNode(const aiScene* mScene,  const aiNode *pNode, const Ogre::String& mDir)
+{
+    if(pNode->mNumMeshes > 0)
+    {
+        Ogre::MeshPtr mesh;
+        Ogre::AxisAlignedBox mAAB;
+
+        if(mLoaderParams & LP_GENERATE_SINGLE_MESH)
+        {
+            if(mMeshes.size() == 0)
+            {
+			   mesh = this->meshPtr;
+
+                mMeshes.push_back(mesh);
+            }
+            else
+            {
+                mesh = mMeshes[0];
+                mAAB = mesh->getBounds();
+            }
+        }
+
+        for ( unsigned int idx=0; idx<pNode->mNumMeshes; ++idx )
+        {
+            aiMesh *pAIMesh = mScene->mMeshes[ pNode->mMeshes[ idx ] ];
+            if(!mQuietMode)
+            {
+                Ogre::LogManager::getSingleton().logMessage("SubMesh " + Ogre::StringConverter::toString(idx) + " for mesh '" + Ogre::String(pNode->mName.data) + "'");
+            }
+
+            // Create a material instance for the mesh.
+            const aiMaterial *pAIMaterial = mScene->mMaterials[ pAIMesh->mMaterialIndex ];
+            createSubMesh(pNode->mName.data, idx, pNode, pAIMesh, pAIMaterial, mesh, mAAB, mDir);
+        }
+
+        // We must indicate the bounding box
+        mesh->_setBounds(mAAB);
+        mesh->_setBoundingSphereRadius((mAAB.getMaximum()- mAAB.getMinimum()).length()/2);
+    }
+
+    // Traverse all child nodes of the current node instance
+    for ( unsigned int childIdx=0; childIdx<pNode->mNumChildren; childIdx++ )
+    {
+        const aiNode *pChildNode = pNode->mChildren[ childIdx ];
+        loadDataFromNode(mScene, pChildNode, mDir);
+    }
 }
